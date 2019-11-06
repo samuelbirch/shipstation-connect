@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.2.4 - 2019-10-28
+
+### Updated
+
+- Username/password fields accept environment variables as values.
+
+## 1.2.3 - 2019-10-22
+
+### Added
+
+- Option to use shipping address for billing address when billing information is missing.
+
+## 1.2.2 - 2019-09-11
+
+### Updated
+
+- Order filter by subscription store to filter on the column directly instead of relying on the search index.
+
+### Removed
+
+- Untracked `composer.lock`.
+
+## 1.2.1 - 2019-08-23
+
+### Added
+
+- `FindOrderEvent` to allow users to implement custom logic to find an order.
+
+## 1.2.0 - 2019-08-16
+
+### Updated
+
+- `OrderFieldEvent::data` to `OrderFieldEvent::value` because `data` is already defined in the parent class.
+
+## 1.1.0 - 2019-08-12
+
+### Added
+
+- `OrderFieldEvent` event for setting values of custom fields.
+- Settings to specify which matrix field to use for setting order tracking information.
+- Multiple store configuration
+- Event to override default OrderNumber field
+- Event to override default ShippingMethod field
+
+### Updated
+
+- Filter orders by date modified according to the ShipStation docs.
+- Default OrderNumber field to `"reference"`
+
+### Removed
+
+- Field creation migrations - These need to be handled by the user manually now.
+
 ## 1.0.11 - 2019-04-01
 
 ### Removed

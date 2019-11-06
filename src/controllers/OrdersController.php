@@ -6,12 +6,18 @@ use craft\web\Controller;
 use craft\elements\MatrixBlock;
 use craft\commerce\Plugin as CommercePlugin;
 use craft\commerce\elements\Order;
+use craft\db\Query;
+use craft\db\Table;
+use craft\models\MatrixBlockType;
 use yii\web\HttpException;
 use yii\base\ErrorException;
+use yii\base\Event;
 use fostercommerce\shipstationconnect\Plugin;
+use fostercommerce\shipstationconnect\events\FindOrderEvent;
 
 class OrdersController extends Controller
 {
+    const FIND_ORDER_EVENT = 'findOrderEvent';
 
     // Disable CSRF validation for the entire controller
     public $enableCsrfValidation = false;
@@ -26,7 +32,7 @@ class OrdersController extends Controller
      * @param array $variables, containing key 'fulfillmentService'
      * @throws HttpException for malformed requests
      */
-    public function actionProcess()
+    public function actionProcess($store = null, $action = null)
     {
         $request = Craft::$app->request;
         try {
@@ -34,51 +40,54 @@ class OrdersController extends Controller
                 throw new HttpException(401, 'Invalid ShipStation username or password.');
             }
 
-            switch ($request->getParam('action')) {
+            switch ($action) {
                 case 'export':
-                    return $this->getOrders();
+                    return $this->getOrders($store);
                 case 'shipnotify':
                     return $this->postShipment();
                 default:
                     throw new HttpException(400, 'No action set. Set the ?action= parameter as `export` or `shipnotify`.');
             }
         } catch (ErrorException $e) {
-            $this->logException('Error processing action {action}', ['action' => $request->getParam('action')], $e);
+            $this->logException('Error processing action {action}', ['action' => $action], $e);
             return $this->asErrorJson($e->getMessage())->setStatusCode(500);
         } catch (HttpException $e) {
-            $action = $request->getParam('action');
+            $action = $action;
             if ($action) {
-                $this->logException('Error processing action {action}', ['action' => $request->getParam('action')], $e);
+                $this->logException('Error processing action {action}', ['action' => $action], $e);
             } else {
                 $this->logException('An action is required. Supported actions: export, shipnotify.');
             }
 
             return $this->asErrorJson($e->getMessage())->setStatusCode($e->statusCode);
         } catch (\Exception $e) {
-            $this->logException('Error processing action {action}', ['action' => $request->getParam('action')], $e);
+            $this->logException('Error processing action {action}', ['action' => $action], $e);
             return $this->asErrorJson($e->getMessage())->setStatusCode(500);
         }
     }
 
-    private function logException($msg, $params, $e)
+    private function logException($msg, $params = [], $e = null)
     {
         Craft::error(
             Craft::t('shipstationconnect', $msg, $params),
             __METHOD__
         );
-        Craft::$app->getErrorHandler()->logException($e);
+
+        if ($e) {
+            Craft::$app->getErrorHandler()->logException($e);
+        }
     }
 
     /**
-     * Authenticate the user using HTTP Basic auth. This is NOT using Craft's sessions/authentication.
+     * Authenticate the user using HTTP Basic auth. This is *not* using Craft's sessions/authentication.
      *
      * @return bool, true if successfully authenticated or false otherwise
      */
     protected function authenticate()
     {
         $settings = Plugin::getInstance()->settings;
-        $expectedUsername = $settings->shipstationUsername;
-        $expectedPassword = $settings->shipstationPassword;
+        $expectedUsername = Craft::parseEnv($settings->shipstationUsername);
+        $expectedPassword = Craft::parseEnv($settings->shipstationPassword);
 
         $username = array_key_exists('PHP_AUTH_USER', $_SERVER) ? $_SERVER['PHP_AUTH_USER'] : null;
         $password = array_key_exists('PHP_AUTH_PW', $_SERVER) ? $_SERVER['PHP_AUTH_PW'] : null;
@@ -91,7 +100,7 @@ class OrdersController extends Controller
      *
      * @return SimpleXMLElement Orders XML
      */
-    protected function getOrders()
+    protected function getOrders($store = null)
     {
         $query = Order::find();
 
@@ -103,7 +112,13 @@ class OrdersController extends Controller
         }
 
         $query->isCompleted(true);
-        $query->orderBy('dateOrdered asc');
+
+        $storeFieldHandle = Plugin::getInstance()->settings->storesFieldHandle;
+        if ($store !== null || $storeFieldHandle !== '') {
+            $query->andWhere(["field_${storeFieldHandle}" => $store]);
+        }
+
+        $query->orderBy('dateUpdated asc');
 
         $num_pages = $this->paginateOrders($query);
 
@@ -162,6 +177,31 @@ class OrdersController extends Controller
         return null;
     }
 
+    private function getBlockTypeByHandle($fieldId, $handle)
+    {
+        $result = (new Query())
+            ->select([
+                'id',
+                'fieldId',
+                'fieldLayoutId',
+                'name',
+                'handle',
+                'sortOrder',
+                'uid'
+            ])
+            ->from([Table::MATRIXBLOCKTYPES])
+            ->where(['fieldId' => $fieldId])
+            ->andWhere(['handle' => $handle])
+            ->orderBy(['sortOrder' => SORT_ASC])
+            ->one();
+
+        if ($result) {
+            return new MatrixBlockType($result);
+        }
+
+        return null;
+    }
+
     /**
      * Updates order status for a given order. This is called by ShipStation.
      * The order is found using the query param `order_number`.
@@ -185,11 +225,12 @@ class OrdersController extends Controller
         $order->message = 'Marking order as shipped. Adding shipping information.';
         $shippingInformation = $this->getShippingInformationFromParams();
 
-        $matrix = Craft::$app->fields->getFieldByHandle('shippingInfo');
+        $settings = Plugin::getInstance()->settings;
+        $matrix = Craft::$app->fields->getFieldByHandle($settings->matrixFieldHandle);
 
+        // If the field exists
         if ($matrix) {
-            $blockTypes = Craft::$app->matrix->getBlockTypesByFieldId($matrix->id);
-            $blockType = array_shift($blockTypes);
+            $blockType = $this->getBlockTypeByHandle($matrix->id, $settings->blockTypeHandle);
 
             if ($blockType && $order && $this->validateShippingInformation($shippingInformation)) {
                 $block = new MatrixBlock([
@@ -197,9 +238,9 @@ class OrdersController extends Controller
                     'fieldId' => $matrix->id,
                     'typeId' => $blockType->id,
                 ]);
-                $block->setFieldValue('carrier', $shippingInformation['carrier']);
-                $block->setFieldValue('service', $shippingInformation['service']);
-                $block->setFieldValue('tracking', $shippingInformation['trackingNumber']);
+                $block->setFieldValue($settings->carrierFieldHandle, $shippingInformation['carrier']);
+                $block->setFieldValue($settings->serviceFieldHandle, $shippingInformation['service']);
+                $block->setFieldValue($settings->trackingNumberFieldHandle, $shippingInformation['trackingNumber']);
 
                 if (!Craft::$app->elements->saveElement($block)) {
                     Craft::warning(
@@ -271,11 +312,20 @@ class OrdersController extends Controller
     protected function orderFromParams()
     {
         $request = Craft::$app->getRequest();
-        if ($order_number = $request->getParam('order_number')) {
-            if ($order = CommercePlugin::getInstance()->orders->getOrderByNumber($order_number)) {
-                return $order;
+        if ($orderNumber = $request->getParam('order_number')) {
+            $findOrderEvent = new FindOrderEvent(['orderNumber' => $orderNumber]);
+            Event::trigger(static::class, self::FIND_ORDER_EVENT, $findOrderEvent);
+
+            $order = $findOrderEvent->order;
+            if (!$order) {
+                if ($order = Order::find()->reference($orderNumber)->one()) {
+                    return $order;
+                }
+
+                throw new HttpException(404, "Order with number '{$orderNumber}' not found");
             }
-            throw new HttpException(404, "Order with number '{$order_number}' not found");
+
+            return $order;
         }
         throw new HttpException(406, 'Order number must be set');
     }

@@ -6,6 +6,7 @@ use craft\events\RegisterUrlRulesEvent;
 use craft\web\UrlManager;
 use yii\base\Event;
 use yii\base\Exception;
+use fostercommerce\shipstationconnect\web\twig\filters\IsFieldTypeFilter;
 
 class Plugin extends \craft\base\Plugin
 {
@@ -20,6 +21,8 @@ class Plugin extends \craft\base\Plugin
         $this->setComponents([
             'xml' => \fostercommerce\shipstationconnect\services\Xml::class,
         ]);
+
+        Craft::$app->view->registerTwigExtension(new IsFieldTypeFilter());
 
         Event::on(
             UrlManager::class,
