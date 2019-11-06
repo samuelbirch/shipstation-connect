@@ -545,10 +545,11 @@ class Xml extends Component
     {
         $new_child = $xml->addChild($name);
         if ($new_child !== null) {
-			$node = dom_import_simplexml($new_child);
-			if (gettype($value) == 'array'){
-				$value = '';//json_encode($value);
-			}
+	    $node = dom_import_simplexml($new_child);
+	    if (gettype($value) == 'array'){
+	        $value = '';
+	    }
+	    $value = substr($value, 0, 100);
             $node->appendChild($node->ownerDocument->createCDATASection($value));
         }
         return $new_child;
